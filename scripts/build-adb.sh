@@ -44,16 +44,19 @@ cmake -S "$WORK/vendor" -B "$BLD" -G Ninja \
 	-DADB_BUILD_ID="$AOSP_REF"
 
 echo "==> Building adb"
-# Keep the full log, and turn compiler errors into GitHub annotations so
-# they show up on the run summary page.
+# Keep going after the first failure so one run reports every broken file,
+# and collect the compiler errors into a single GitHub annotation that shows
+# up on the run summary page.
 set +e
-cmake --build "$BLD" --target adb 2>&1 | tee "$WORK/adb-build.log"
+cmake --build "$BLD" --target adb -- -k 0 2>&1 | tee "$WORK/adb-build.log"
 status=${PIPESTATUS[0]}
 set -e
 if [ "$status" -ne 0 ]; then
 	if [ -n "${GITHUB_ACTIONS:-}" ]; then
-		grep -E 'error:|undefined (symbol|reference)|FAILED:' "$WORK/adb-build.log" | head -n 40 |
-			sed 's/^/::error::/' || true
+		summary=$(grep -E 'error:|error [A-Z][0-9]+|undefined (symbol|reference)|ld\.lld:|FAILED:' "$WORK/adb-build.log" |
+			sed "s|$WORK/||g" | tr -d '\r' | awk '!seen[$0]++' | head -n 120)
+		summary=${summary//%/%25}
+		echo "::error title=adb build failed::${summary//$'\n'/%0A}"
 	fi
 	exit "$status"
 fi
@@ -116,7 +119,7 @@ zstd:         $ZSTD_VERSION
 EOF
 (cd "$WORK" && zip -qr "$DIST/$pkg.zip" "$pkg")
 (cd "$DIST" && sha256sum adb "$pkg.zip" >SHA256SUMS)
-cp "$WORK/$pkg/BUILD-INFO.txt" "$DIST/"
+cp "$WORK/$pkg/BUILD-INFO.txt" "$WORK/source-info.env" "$DIST/"
 
 echo "==> Output in $DIST"
 ls -l "$DIST"

@@ -50,9 +50,9 @@ jobs:
           FORCE_INPUT: ${{ inputs.force }}
         run: |
           case "$EVENT" in
-            schedule)          force=false;            publish=true ;;
+            schedule)          force=false;                 publish=true ;;
             workflow_dispatch) force=${FORCE_INPUT:-false}; publish=true ;;
-            *)                 force=true;             publish=false ;;  # push / PR: test build only
+            *)                 force=true;                  publish=false ;;  # push / PR: test build only
           esac
           echo "force=$force" >>"$GITHUB_OUTPUT"
           echo "publish=$publish" >>"$GITHUB_OUTPUT"
@@ -74,15 +74,22 @@ jobs:
         run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/build.yml/enable" || true
 
   build:
-    name: Build adb ${{ needs.check.outputs.tag }} (arm64-v8a)
+    name: Build ${{ needs.check.outputs.tag }} (${{ matrix.abi }})
     needs: check
     if: needs.check.outputs.build == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        # arm64-v8a is what gets released. x86_64 is built from the same
+        # sources only so it can be run in the emulator test below.
+        abi: [arm64-v8a, x86_64]
     env:
+      ANDROID_ABI: ${{ matrix.abi }}
+      AOSP_REF: ${{ needs.check.outputs.tag }}
       WORK: ${{ github.workspace }}/work
       DIST: ${{ github.workspace }}/dist
-      AOSP_REF: ${{ needs.check.outputs.tag }}
     steps:
       - uses: actions/checkout@v5
 
@@ -105,17 +112,28 @@ jobs:
 
       - name: Restore third-party libraries
         id: deps
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: |
             work/host
             work/prefix
             work/deps-src
-          key: deps-${{ runner.os }}-${{ hashFiles('scripts/versions.env', 'scripts/build-deps.sh') }}
+          key: deps-${{ matrix.abi }}-${{ hashFiles('scripts/versions.env', 'scripts/build-deps.sh') }}
 
       - name: Build third-party libraries
         if: steps.deps.outputs.cache-hit != 'true'
         run: bash scripts/build-deps.sh "$WORK"
+
+      # Saved right away, so a later failure doesn't throw the work away.
+      - name: Save third-party libraries
+        if: steps.deps.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            work/host
+            work/prefix
+            work/deps-src
+          key: ${{ steps.deps.outputs.cache-primary-key }}
 
       - name: Build adb
         run: bash scripts/build-adb.sh "$WORK" "$DIST"
@@ -123,13 +141,63 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v5
         with:
-          name: adb-${{ needs.check.outputs.tag }}-arm64-v8a
+          name: adb-${{ matrix.abi }}
           path: dist/
           if-no-files-found: error
 
-      - name: Publish GitHub release
-        if: needs.check.outputs.publish == 'true'
+  test:
+    name: Self-debug test in an Android emulator
+    needs: [check, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: adb-x86_64
+          path: dist-x86_64
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: adb-arm64-v8a
+          path: dist-arm64-v8a
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # The x86_64 build must pass. The arm64 build is tried too, in case the
+      # emulator image can run ARM binaries through its translation layer.
+      - name: Run adb inside the emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            bash scripts/smoke-test.sh dist-x86_64/adb
+            bash scripts/smoke-test.sh dist-arm64-v8a/adb || echo "::notice::the x86_64 emulator could not run the arm64 binary; it was only tested as x86_64"
+
+  release:
+    name: Publish release
+    needs: [check, build, test]
+    if: needs.check.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: adb-arm64-v8a
+          path: dist
+
+      - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-        run: bash scripts/publish-release.sh "$WORK" "$DIST"
+        run: bash scripts/publish-release.sh dist

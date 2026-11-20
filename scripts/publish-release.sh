@@ -1,30 +1,33 @@
 #!/usr/bin/env bash
 # Create (or update) the GitHub release for a finished build.
 #
-# Usage: publish-release.sh <work-dir> <dist-dir>
+# Usage: publish-release.sh <dist-dir>
+#
+#   dist-dir  output of build-adb.sh (adb, adb-<abi>.zip, SHA256SUMS,
+#             source-info.env)
 #
 # Environment:
 #   GH_TOKEN  token with contents:write (provided by GitHub Actions)
 #   GH_REPO   owner/repo (defaults to the git remote)
 set -euo pipefail
 
-if [ $# -ne 2 ]; then
-	echo "usage: $0 <work-dir> <dist-dir>" >&2
+if [ $# -ne 1 ]; then
+	echo "usage: $0 <dist-dir>" >&2
 	exit 2
 fi
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-WORK=$(cd "$1" && pwd)
-DIST=$(cd "$2" && pwd)
+DIST=$(cd "$1" && pwd)
 # shellcheck source=versions.env
 source "$ROOT/scripts/versions.env"
 # shellcheck disable=SC1091
-source "$WORK/source-info.env"
+source "$DIST/source-info.env"
 
 tag=$AOSP_REF
 title="adb $PLATFORM_TOOLS_VERSION ($AOSP_REF)"
 assets=("$DIST/adb" "$DIST/adb-$ANDROID_ABI.zip" "$DIST/SHA256SUMS")
 adb_url=https://android.googlesource.com/platform/packages/modules/adb
+repo=${GH_REPO:-${GITHUB_REPOSITORY:-}}
 
 notes=$(mktemp)
 cat >"$notes" <<EOF
@@ -43,7 +46,7 @@ cat >"$notes" <<EOF
 - \`adb-$ANDROID_ABI.zip\`：執行檔 + 授權條款 + 編譯資訊
 - \`SHA256SUMS\`：校驗碼
 
-用法（例如 Wi-Fi 自我調試）請看 [README](https://github.com/${GH_REPO:-${GITHUB_REPOSITORY:-}}#readme)。
+用法（例如 Wi-Fi 自我調試）請看 [README](https://github.com/$repo#readme)。
 
 \`\`\`
 $(cat "$DIST/SHA256SUMS")

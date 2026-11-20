@@ -53,6 +53,11 @@ std::string GetBuildNumber() {
 }  // namespace android
 #endif
 ")
+# libziparchive's zip_writer.h only needs FRIEND_TEST from googletest.
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/gtest/gtest_prod.h"
+"#pragma once
+#define FRIEND_TEST(test_case_name, test_name) friend class test_case_name##_##test_name##_Test
+")
 
 # Bundled AOSP libraries.
 set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
@@ -85,7 +90,7 @@ find_package(Protobuf REQUIRED)
 set(THREADS_PREFER_PTHREAD_FLAG ON)
 find_package(Threads REQUIRED)
 
-include_directories(${Protobuf_INCLUDE_DIRS})
+include_directories(${Protobuf_INCLUDE_DIRS} "${DEPS_PREFIX}/include")
 include_directories(${CMAKE_CURRENT_BINARY_DIR})
 
 include(CMakeLists.libusb.txt)
