@@ -1,0 +1,369 @@
+diff --git a/adb_utils.cpp b/adb_utils.cpp
+index 6102f4e..efb5fa6 100644
+--- a/adb_utils.cpp
++++ b/adb_utils.cpp
+@@ -344,7 +344,11 @@ std::string GetLogFilePath() {
+     return temp_path_utf8 + log_name;
+ #else
+     const char* tmp_dir = getenv("TMPDIR");
++#if defined(__ANDROID__)
++    if (tmp_dir == nullptr) tmp_dir = "/data/local/tmp";
++#else
+     if (tmp_dir == nullptr) tmp_dir = "/tmp";
++#endif
+     return android::base::StringPrintf("%s/adb.%u.log", tmp_dir, getuid());
+ #endif
+ }
+diff --git a/client/main.cpp b/client/main.cpp
+index efde06c..3c65402 100644
+--- a/client/main.cpp
++++ b/client/main.cpp
+@@ -226,9 +226,9 @@ int adb_server_main(int is_daemon, const std::string& socket_spec, const char* o
+ 
+ #if defined(__linux__)
+     // Write our location to .android/adb.$PORT, so that older clients can exec us.
+-    std::string path;
+-    if (!android::base::Readlink("/proc/self/exe", &path)) {
+-        PLOG(ERROR) << "failed to readlink /proc/self/exe";
++    std::string path = android::base::GetExecutablePath();
++    if (path.empty()) {
++        PLOG(ERROR) << "failed to get the executable path";
+     }
+ 
+     std::optional<std::string> server_executable_path = adb_get_server_executable_path();
+diff --git a/client/transport_usb.cpp b/client/transport_usb.cpp
+index d3b4929..338d37e 100644
+--- a/client/transport_usb.cpp
++++ b/client/transport_usb.cpp
+@@ -180,6 +180,11 @@ bool is_libusb_enabled() {
+     bool enable = false;
+ #if defined(__APPLE__)
+     enable = true;
++#endif
++#ifdef __ANDROID__
++    if (getenv("TERMUX_USB_FD") != nullptr) {
++        enable = true;
++    }
+ #endif
+     char* env = getenv("ADB_LIBUSB");
+     if (env) {
+diff --git a/client/usb_libusb_device.cpp b/client/usb_libusb_device.cpp
+index f75178e..1068fba 100644
+--- a/client/usb_libusb_device.cpp
++++ b/client/usb_libusb_device.cpp
+@@ -57,8 +57,8 @@ static bool endpoint_is_output(uint8_t endpoint) {
+     return (endpoint & LIBUSB_ENDPOINT_DIR_MASK) == LIBUSB_ENDPOINT_OUT;
+ }
+ 
+-LibUsbDevice::LibUsbDevice(libusb_device* device)
+-    : device_(device), device_address_(GetDeviceAddress()) {
++LibUsbDevice::LibUsbDevice(libusb_device* device, libusb_device_handle* handle)
++    : device_(device), device_handle_(handle), device_address_(GetDeviceAddress()) {
+     libusb_ref_device(device);
+     Init();
+ }
+@@ -454,13 +454,12 @@ void LibUsbDevice::RetrieveSpeeds() {
+ bool LibUsbDevice::OpenDeviceHandle() {
+     if (device_handle_) {
+         VLOG(USB) << "device already open";
+-        return true;
+-    }
+-
+-    int rc = libusb_open(device_, &device_handle_);
+-    if (rc != 0) {
+-        VLOG(USB) << "Unable to open device: " << GetSerial() << " :" << libusb_strerror(static_cast<libusb_error>(rc));
+-        return false;
++    } else {
++        int rc = libusb_open(device_, &device_handle_);
++        if (rc != 0) {
++            VLOG(USB) << "Unable to open device: " << GetSerial() << " :" << libusb_strerror(static_cast<libusb_error>(rc));
++            return false;
++        }
+     }
+ 
+     if (!RetrieveSerial()) {
+diff --git a/client/usb_libusb_device.h b/client/usb_libusb_device.h
+index 3e4316f..0855139 100644
+--- a/client/usb_libusb_device.h
++++ b/client/usb_libusb_device.h
+@@ -48,7 +48,7 @@ union USBSessionID {
+ // Abstraction layer simplifying libusb_device management
+ struct LibUsbDevice {
+   public:
+-    explicit LibUsbDevice(libusb_device* device);
++    explicit LibUsbDevice(libusb_device* device, libusb_device_handle* handle = nullptr);
+     ~LibUsbDevice();
+ 
+     // Device must have been Opened prior to calling this method.
+diff --git a/client/usb_libusb_hotplug.cpp b/client/usb_libusb_hotplug.cpp
+index 9570570..90d6e74 100644
+--- a/client/usb_libusb_hotplug.cpp
++++ b/client/usb_libusb_hotplug.cpp
+@@ -55,8 +55,8 @@ static std::mutex connections_mutex_ [[clang::no_destroy]];
+ static std::unordered_map<libusb_device*, std::weak_ptr<LibUsbConnection>> GUARDED_BY(
+         connections_mutex_) connections_ [[clang::no_destroy]];
+ 
+-static void process_device(libusb_device* raw_device) {
+-    auto device = std::make_unique<LibUsbDevice>(raw_device);
++static void process_device(libusb_device* raw_device, libusb_device_handle* handle = nullptr) {
++    auto device = std::make_unique<LibUsbDevice>(raw_device, handle);
+     if (!device) {
+         LOG(FATAL) << "Failed to construct LibusbConnection";
+     }
+@@ -258,6 +258,9 @@ static void usb_init_inhouse_hotplug() {
+ 
+ void usb_init() {
+     VLOG(USB) << "initializing libusb...";
++#ifdef __ANDROID__
++    libusb_set_option(nullptr, LIBUSB_OPTION_WEAK_AUTHORITY);
++#endif
+     int rc = libusb_init(nullptr);
+     if (rc != 0) {
+         LOG(WARNING) << "failed to initialize libusb: " << libusb_error_name(rc);
+@@ -269,5 +272,23 @@ void usb_init() {
+     } else {
+         usb_init_inhouse_hotplug();
+     }
++
++#ifdef __ANDROID__
++    char* termux_usb_env = getenv("TERMUX_USB_FD");
++    if (termux_usb_env != nullptr) {
++        char* endp;
++        long int termux_usb_fd = strtol(termux_usb_env, &endp, 10);
++        if (endp != termux_usb_env) {
++            libusb_device_handle* handle = nullptr;
++            int wrap_rc = libusb_wrap_sys_device(nullptr, termux_usb_fd, &handle);
++            if (wrap_rc == 0 && handle != nullptr) {
++                process_device(libusb_get_device(handle), handle);
++            } else {
++                LOG(WARNING) << "Failed to wrap TERMUX_USB_FD as libusb device: "
++                             << libusb_error_name(wrap_rc);
++            }
++        }
++    }
++#endif
+ }
+ }  // namespace libusb
+\ No newline at end of file
+diff --git a/pairing_auth/include/adb/pairing/pairing_auth.h b/pairing_auth/include/adb/pairing/pairing_auth.h
+index 83f40a9..9804b76 100644
+--- a/pairing_auth/include/adb/pairing/pairing_auth.h
++++ b/pairing_auth/include/adb/pairing/pairing_auth.h
+@@ -53,7 +53,7 @@ typedef struct PairingAuthCtx PairingAuthCtx;
+  * @return a new PairingAuthCtx server instance. Caller is responsible for
+  *         destroying the context via #pairing_auth_destroy.
+  */
+-PairingAuthCtx* pairing_auth_server_new(const uint8_t* pswd, size_t len) __INTRODUCED_IN(30);
++PairingAuthCtx* pairing_auth_server_new(const uint8_t* pswd, size_t len) __INTRODUCED_IN(24);
+ 
+ /**
+  * Creates a new PairingAuthCtx instance as the client.
+@@ -64,14 +64,14 @@ PairingAuthCtx* pairing_auth_server_new(const uint8_t* pswd, size_t len) __INTRO
+  * @return a new PairingAuthCtx client instance. Caller is responsible for
+  *         destroying the context via #pairing_auth_destroy.
+  */
+-PairingAuthCtx* pairing_auth_client_new(const uint8_t* pswd, size_t len) __INTRODUCED_IN(30);
++PairingAuthCtx* pairing_auth_client_new(const uint8_t* pswd, size_t len) __INTRODUCED_IN(24);
+ 
+ /**
+  * Destroys the PairingAuthCtx.
+  *
+  * @param ctx the PairingAuthCtx instance to destroy. Will abort if null.
+  */
+-void pairing_auth_destroy(PairingAuthCtx* ctx) __INTRODUCED_IN(30);
++void pairing_auth_destroy(PairingAuthCtx* ctx) __INTRODUCED_IN(24);
+ 
+ /**
+  * Returns the exact size of the SPAKE2 msg.
+@@ -82,7 +82,7 @@ void pairing_auth_destroy(PairingAuthCtx* ctx) __INTRODUCED_IN(30);
+  * @param ctx the PairingAuthCtx instance. Will abort if null.
+  * @return the size of the SPAKE2 message in bytes. This is guaranteed to be > 0.
+  */
+-size_t pairing_auth_msg_size(PairingAuthCtx* ctx) __INTRODUCED_IN(30);
++size_t pairing_auth_msg_size(PairingAuthCtx* ctx) __INTRODUCED_IN(24);
+ 
+ /**
+  * Writes the SPAKE2 message to exchange with the other party to |out_buf|.
+@@ -96,7 +96,7 @@ size_t pairing_auth_msg_size(PairingAuthCtx* ctx) __INTRODUCED_IN(30);
+  *                be have at least #pairing_auth_msg_size size. Will abort if
+  *                out_buf is null.
+  */
+-void pairing_auth_get_spake2_msg(PairingAuthCtx* ctx, uint8_t* out_buf) __INTRODUCED_IN(30);
++void pairing_auth_get_spake2_msg(PairingAuthCtx* ctx, uint8_t* out_buf) __INTRODUCED_IN(24);
+ 
+ /**
+  * Processes the peer's |their_msg| and attempts to initialize the cipher for
+@@ -117,7 +117,7 @@ void pairing_auth_get_spake2_msg(PairingAuthCtx* ctx, uint8_t* out_buf) __INTROD
+  *         for more details on the SPAKE2 protocol.
+  */
+ bool pairing_auth_init_cipher(PairingAuthCtx* ctx, const uint8_t* their_msg, size_t msg_len)
+-        __INTRODUCED_IN(30);
++        __INTRODUCED_IN(24);
+ 
+ /**
+  * Returns a safe buffer size for encrypting data of a certain size.
+@@ -130,7 +130,7 @@ bool pairing_auth_init_cipher(PairingAuthCtx* ctx, const uint8_t* their_msg, siz
+  * @return the minimum buffer size, in bytes, to hold an encrypted message of size len. See
+  * #pairing_auth_encrypt for usage.
+  */
+-size_t pairing_auth_safe_encrypted_size(PairingAuthCtx* ctx, size_t len) __INTRODUCED_IN(30);
++size_t pairing_auth_safe_encrypted_size(PairingAuthCtx* ctx, size_t len) __INTRODUCED_IN(24);
+ 
+ /**
+  * Encrypts input data and writes the encrypted data into a user-provided buffer.
+@@ -147,7 +147,7 @@ size_t pairing_auth_safe_encrypted_size(PairingAuthCtx* ctx, size_t len) __INTRO
+  *         otherwise.
+  */
+ bool pairing_auth_encrypt(PairingAuthCtx* ctx, const uint8_t* inbuf, size_t inlen, uint8_t* outbuf,
+-                          size_t* outlen) __INTRODUCED_IN(30);
++                          size_t* outlen) __INTRODUCED_IN(24);
+ 
+ /**
+  * Returns a safe buffer size for decrypting data of a certain size.
+@@ -162,7 +162,7 @@ bool pairing_auth_encrypt(PairingAuthCtx* ctx, const uint8_t* inbuf, size_t inle
+  *         #pairing_auth_decrypt for usage.
+  */
+ size_t pairing_auth_safe_decrypted_size(PairingAuthCtx* ctx, const uint8_t* buf, size_t len)
+-        __INTRODUCED_IN(30);
++        __INTRODUCED_IN(24);
+ 
+ /**
+  * Decrypts input data and writes the decrypted data into a user-provided buffer.
+@@ -180,7 +180,7 @@ size_t pairing_auth_safe_decrypted_size(PairingAuthCtx* ctx, const uint8_t* buf,
+  *         otherwise.
+  */
+ bool pairing_auth_decrypt(PairingAuthCtx* ctx, const uint8_t* inbuf, size_t inlen, uint8_t* outbuf,
+-                          size_t* outlen) __INTRODUCED_IN(30);
++                          size_t* outlen) __INTRODUCED_IN(24);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/pairing_connection/include/adb/pairing/pairing_connection.h b/pairing_connection/include/adb/pairing/pairing_connection.h
+index 8e63db7..f158015 100644
+--- a/pairing_connection/include/adb/pairing/pairing_connection.h
++++ b/pairing_connection/include/adb/pairing/pairing_connection.h
+@@ -79,7 +79,7 @@ typedef void (*pairing_result_cb)(const PeerInfo*, int, void*);
+ //         invoked. Otherwise, cb is guaranteed to be invoked, even if you
+ //         destroy the ctx while in the pairing process.
+ bool pairing_connection_start(PairingConnectionCtx* ctx, int fd, pairing_result_cb cb, void* opaque)
+-        __INTRODUCED_IN(30);
++        __INTRODUCED_IN(24);
+ 
+ // Creates a new PairingConnectionCtx instance as the client.
+ //
+@@ -98,7 +98,7 @@ PairingConnectionCtx* pairing_connection_client_new(const uint8_t* pswd, size_t
+                                                     const PeerInfo* peer_info,
+                                                     const uint8_t* x509_cert_pem, size_t x509_size,
+                                                     const uint8_t* priv_key_pem, size_t priv_size)
+-        __INTRODUCED_IN(30);
++        __INTRODUCED_IN(24);
+ 
+ // Creates a new PairingConnectionCtx instance as the server.
+ //
+@@ -117,14 +117,14 @@ PairingConnectionCtx* pairing_connection_server_new(const uint8_t* pswd, size_t
+                                                     const PeerInfo* peer_info,
+                                                     const uint8_t* x509_cert_pem, size_t x509_size,
+                                                     const uint8_t* priv_key_pem, size_t priv_size)
+-        __INTRODUCED_IN(30);
++        __INTRODUCED_IN(24);
+ 
+ // Destroys the PairingConnectionCtx instance.
+ //
+ // It is safe to destroy the instance at any point in the pairing process.
+ //
+ // @param ctx the PairingConnectionCtx instance to destroy. Will abort if null.
+-void pairing_connection_destroy(PairingConnectionCtx* ctx) __INTRODUCED_IN(30);
++void pairing_connection_destroy(PairingConnectionCtx* ctx) __INTRODUCED_IN(24);
+ 
+ #ifdef __cplusplus
+ }
+diff --git a/pairing_connection/include/adb/pairing/pairing_server.h b/pairing_connection/include/adb/pairing/pairing_server.h
+index b6e92af..82fb7d9 100644
+--- a/pairing_connection/include/adb/pairing/pairing_server.h
++++ b/pairing_connection/include/adb/pairing/pairing_server.h
+@@ -45,7 +45,7 @@ typedef struct PairingServerCtx PairingServerCtx;
+ // Callback containing the result of the pairing. If #PeerInfo is null,
+ // then the pairing failed. Otherwise, pairing succeeded and #PeerInfo
+ // contains information about the peer.
+-typedef void (*pairing_server_result_cb)(const PeerInfo*, void*) __INTRODUCED_IN(30);
++typedef void (*pairing_server_result_cb)(const PeerInfo*, void*) __INTRODUCED_IN(24);
+ 
+ // Starts the pairing server.
+ //
+@@ -61,7 +61,7 @@ typedef void (*pairing_server_result_cb)(const PeerInfo*, void*) __INTRODUCED_IN
+ // @param opaque the opaque userdata.
+ // @return the port number the server is listening on. Returns 0 on failure.
+ uint16_t pairing_server_start(PairingServerCtx* ctx, pairing_server_result_cb cb, void* opaque)
+-        __INTRODUCED_IN(30);
++        __INTRODUCED_IN(24);
+ 
+ // Creates a new PairingServerCtx instance.
+ //
+@@ -83,7 +83,7 @@ uint16_t pairing_server_start(PairingServerCtx* ctx, pairing_server_result_cb cb
+ PairingServerCtx* pairing_server_new(const uint8_t* pswd, size_t pswd_len,
+                                      const PeerInfo* peer_info, const uint8_t* x509_cert_pem,
+                                      size_t x509_size, const uint8_t* priv_key_pem,
+-                                     size_t priv_size, uint16_t port) __INTRODUCED_IN(30);
++                                     size_t priv_size, uint16_t port) __INTRODUCED_IN(24);
+ 
+ // Same as #pairing_server_new, except that the x509 certificate and private key
+ // is generated internally.
+@@ -100,12 +100,12 @@ PairingServerCtx* pairing_server_new(const uint8_t* pswd, size_t pswd_len,
+ //         for destroying the context via #pairing_server_destroy.
+ PairingServerCtx* pairing_server_new_no_cert(const uint8_t* pswd, size_t pswd_len,
+                                              const PeerInfo* peer_info, uint16_t port)
+-        __INTRODUCED_IN(30);
++        __INTRODUCED_IN(24);
+ 
+ // Destroys the PairingServerCtx instance.
+ //
+ // @param ctx the PairingServerCtx instance to destroy.
+-void pairing_server_destroy(PairingServerCtx* ctx) __INTRODUCED_IN(30);
++void pairing_server_destroy(PairingServerCtx* ctx) __INTRODUCED_IN(24);
+ 
+ // Enum for features that can be checked with pairing_server_is_feature_supported.
+ enum PairingServerFeature : uint32_t {
+diff --git a/sysdeps.h b/sysdeps.h
+index 9026225..9482daa 100644
+--- a/sysdeps.h
++++ b/sysdeps.h
+@@ -529,7 +529,11 @@ static inline int adb_gethostname(char* name, size_t len) {
+ }
+ 
+ static inline int adb_getlogin_r(char* buf, size_t bufsize) {
+-    return getlogin_r(buf, bufsize);
++    char* logname = getlogin();
++    if (!logname) return ENXIO;
++    if (strlen(logname) >= bufsize) return ERANGE;
++    strcpy(buf, logname);
++    return 0;
+ }
+ 
+ static inline int adb_read(borrowed_fd fd, void* buf, size_t len) {
+diff --git a/sysdeps/posix/network.cpp b/sysdeps/posix/network.cpp
+index ec4c7c8..39e714d 100644
+--- a/sysdeps/posix/network.cpp
++++ b/sysdeps/posix/network.cpp
+@@ -21,6 +21,10 @@
+ #include <netinet/in.h>
+ #include <sys/socket.h>
+ 
++#if defined(__ANDROID__)
++#include <sys/syscall.h>
++#endif
++
+ #include <string>
+ #include <string.h>
+ 
+@@ -74,7 +78,11 @@ static int _network_loopback_client(bool ipv6, int port, int type, std::string*
+ 
+     addr = (ipv6 ? loopback_addr6 : loopback_addr4)(&addr_storage, &addrlen, port);
+ 
++#ifdef __ANDROID__
++    if (syscall(__NR_connect, s.get(), addr, addrlen) != 0) {
++#else
+     if (connect(s.get(), addr, addrlen) != 0) {
++#endif
+         set_error(error);
+         return -1;
+     }

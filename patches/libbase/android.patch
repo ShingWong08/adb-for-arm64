@@ -1,0 +1,70 @@
+diff --git a/file.cpp b/file.cpp
+index 0f8539d..60ebe13 100644
+--- a/file.cpp
++++ b/file.cpp
+@@ -497,7 +497,11 @@ bool Realpath(const std::string& path, std::string* result) {
+ std::string GetExecutablePath() {
+ #if defined(__linux__)
+   std::string path;
+-  android::base::Readlink("/proc/self/exe", &path);
++  if (const char* exe = getenv("TERMUX_EXEC__PROC_SELF_EXE")) {
++    path.assign(exe);
++  } else {
++    android::base::Readlink("/proc/self/exe", &path);
++  }
+   return path;
+ #elif defined(__APPLE__)
+   char path[PATH_MAX + 1];
+diff --git a/include/android-base/unique_fd.h b/include/android-base/unique_fd.h
+index 1ffe02f..530e03d 100644
+--- a/include/android-base/unique_fd.h
++++ b/include/android-base/unique_fd.h
+@@ -29,7 +29,7 @@
+ // Including other headers from libbase frequently results in inclusion of
+ // android-base/macros.h, which causes macro collisions.
+ 
+-#if defined(__BIONIC__)
++#if 0 /* no fdsan before API 29 */
+ #include <android/fdsan.h>
+ #endif
+ #if !defined(_WIN32) && !defined(__TRUSTY__)
+@@ -151,7 +151,7 @@ class unique_fd_impl final {
+ // The actual details of closing are factored out to support unusual cases.
+ // Almost everyone will want this DefaultCloser, which handles fdsan on bionic.
+ struct DefaultCloser {
+-#if defined(__BIONIC__)
++#if 0 /* no fdsan before API 29 */
+   static void Tag(int fd, void* old_addr, void* new_addr) {
+     if (android_fdsan_exchange_owner_tag) {
+       uint64_t old_tag = android_fdsan_create_owner_tag(ANDROID_FDSAN_OWNER_TYPE_UNIQUE_FD,
+diff --git a/properties.cpp b/properties.cpp
+index dd798b3..4478295 100644
+--- a/properties.cpp
++++ b/properties.cpp
+@@ -16,7 +16,7 @@
+ 
+ #include "android-base/properties.h"
+ 
+-#if defined(__BIONIC__)
++#if 0
+ #include <sys/system_properties.h>
+ #endif
+ 
+@@ -31,7 +31,7 @@
+ #include <android-base/strings.h>
+ #include <android-base/thread_annotations.h>
+ 
+-#if !defined(__BIONIC__)
++#if 1
+ 
+ // Here lies a rudimentary implementation of system properties for non-Bionic
+ // platforms. We are using weak symbols here because we want to allow
+@@ -204,7 +204,7 @@ bool SetProperty(const std::string& key, const std::string& value) {
+   return (__system_property_set(key.c_str(), value.c_str()) == 0);
+ }
+ 
+-#if defined(__BIONIC__)
++#if 0
+ 
+ struct WaitForPropertyData {
+   bool done;

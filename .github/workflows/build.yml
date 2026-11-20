@@ -1,0 +1,135 @@
+name: Build adb
+
+on:
+  schedule:
+    # Every day at 20:00 Japan Standard Time (UTC+9). GitHub cron uses UTC.
+    - cron: "0 11 * * *"
+  workflow_dispatch:
+    inputs:
+      aosp_ref:
+        description: "AOSP tag or branch to build (empty = newest android-X.Y.Z_rN tag)"
+        required: false
+        default: ""
+      force:
+        description: "Build and publish even if this adb version is already released"
+        type: boolean
+        default: false
+  push:
+    branches: [main]
+    paths:
+      - "scripts/**"
+      - "cmake/**"
+      - "patches/**"
+      - ".github/workflows/build.yml"
+  pull_request:
+
+permissions:
+  contents: write   # create releases
+  actions: write    # keep the schedule from being auto-disabled
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check AOSP for a new adb
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+      tag: ${{ steps.check.outputs.tag }}
+      commit: ${{ steps.check.outputs.commit }}
+      publish: ${{ steps.mode.outputs.publish }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Decide what to do
+        id: mode
+        env:
+          EVENT: ${{ github.event_name }}
+          FORCE_INPUT: ${{ inputs.force }}
+        run: |
+          case "$EVENT" in
+            schedule)          force=false;            publish=true ;;
+            workflow_dispatch) force=${FORCE_INPUT:-false}; publish=true ;;
+            *)                 force=true;             publish=false ;;  # push / PR: test build only
+          esac
+          echo "force=$force" >>"$GITHUB_OUTPUT"
+          echo "publish=$publish" >>"$GITHUB_OUTPUT"
+
+      - name: Look up the newest AOSP release tag
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ steps.mode.outputs.force }}
+          AOSP_REF: ${{ inputs.aosp_ref }}
+        run: bash scripts/check-update.sh "$AOSP_REF"
+
+      # GitHub turns off scheduled workflows in repositories without activity
+      # for 60 days. Re-enabling the workflow through the API resets that.
+      - name: Keep the daily schedule alive
+        if: github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X PUT "repos/${{ github.repository }}/actions/workflows/build.yml/enable" || true
+
+  build:
+    name: Build adb ${{ needs.check.outputs.tag }} (arm64-v8a)
+    needs: check
+    if: needs.check.outputs.build == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      WORK: ${{ github.workspace }}/work
+      DIST: ${{ github.workspace }}/dist
+      AOSP_REF: ${{ needs.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install build tools
+        run: |
+          missing=
+          for t in ninja patch zip unzip; do command -v "$t" >/dev/null || missing="$missing $t"; done
+          if [ -n "$missing" ]; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ninja-build patch zip unzip
+          fi
+          cmake --version | head -n1
+          ninja --version
+
+      - name: Set up Android NDK
+        run: bash scripts/setup-ndk.sh "$RUNNER_TEMP/ndk" >>"$GITHUB_ENV"
+
+      - name: Fetch AOSP sources
+        run: bash scripts/fetch-sources.sh "$AOSP_REF" "$WORK"
+
+      - name: Restore third-party libraries
+        id: deps
+        uses: actions/cache@v5
+        with:
+          path: |
+            work/host
+            work/prefix
+            work/deps-src
+          key: deps-${{ runner.os }}-${{ hashFiles('scripts/versions.env', 'scripts/build-deps.sh') }}
+
+      - name: Build third-party libraries
+        if: steps.deps.outputs.cache-hit != 'true'
+        run: bash scripts/build-deps.sh "$WORK"
+
+      - name: Build adb
+        run: bash scripts/build-adb.sh "$WORK" "$DIST"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: adb-${{ needs.check.outputs.tag }}-arm64-v8a
+          path: dist/
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        if: needs.check.outputs.publish == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: bash scripts/publish-release.sh "$WORK" "$DIST"

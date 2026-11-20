@@ -1,0 +1,62 @@
+diff --git a/libcutils/native_handle.cpp b/libcutils/native_handle.cpp
+index e5a070c..5018d8e 100644
+--- a/libcutils/native_handle.cpp
++++ b/libcutils/native_handle.cpp
+@@ -23,7 +23,7 @@
+ #include <unistd.h>
+ 
+ // Needs to come after stdlib includes to capture the __BIONIC__ definition
+-#ifdef __BIONIC__
++#if 0
+ #include <android/fdsan.h>
+ #endif
+ 
+@@ -36,7 +36,7 @@
+ 
+ namespace {
+ 
+-#if !defined(__BIONIC__)
++#if 1
+ // fdsan stubs when not linked against bionic
+ #define ANDROID_FDSAN_OWNER_TYPE_NATIVE_HANDLE 0
+ 
+diff --git a/libcutils/properties.cpp b/libcutils/properties.cpp
+index d3a2b50..35a27c5 100644
+--- a/libcutils/properties.cpp
++++ b/libcutils/properties.cpp
+@@ -91,7 +91,7 @@ int property_get(const char* key, char* value, const char* default_value) {
+     return len;
+ }
+ 
+-#if __has_include(<sys/system_properties.h>)
++#if 0 /* private bionic header */
+ 
+ #include <sys/system_properties.h>
+ 
+diff --git a/libcutils/socket_network_client_unix.cpp b/libcutils/socket_network_client_unix.cpp
+index 4c26b26..68cc2cd 100644
+--- a/libcutils/socket_network_client_unix.cpp
++++ b/libcutils/socket_network_client_unix.cpp
+@@ -28,6 +28,10 @@
+ #include <netinet/in.h>
+ #include <netdb.h>
+ 
++#if defined(__ANDROID__)
++#include <sys/syscall.h>
++#endif
++
+ #include "sockets_utils.h"
+ 
+ // Connect to the given host and port.
+@@ -57,7 +61,11 @@ int socket_network_client_timeout(const char* host, int port, int type, int time
+         int s = socket(addr->ai_family, type, addr->ai_protocol);
+         if (s == -1 || toggle_O_NONBLOCK(s) == -1) break;
+ 
++#ifdef __ANDROID__
++        int rc = syscall(__NR_connect, s, addr->ai_addr, addr->ai_addrlen);
++#else
+         int rc = connect(s, addr->ai_addr, addr->ai_addrlen);
++#endif
+         if (rc == 0) {
+             result = toggle_O_NONBLOCK(s);
+             break;
