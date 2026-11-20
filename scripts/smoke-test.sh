@@ -110,3 +110,7 @@ dadb kill-server
 
 echo
 echo "smoke test passed"
+if [ -n "${GITHUB_ACTIONS:-}" ]; then
+	summary=$(grep -E '^(Version|Running on)|connected to|self-debug-ok' "$LOG" | tr -d '\r' | awk '!seen[$0]++')
+	echo "::notice title=smoke test passed ($BIN)::${summary//$'\n'/%0A}"
+fi

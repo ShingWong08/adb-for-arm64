@@ -75,9 +75,10 @@ chmod +x adb
 2. 讀取 AOSP adb 倉庫所有 `android-X.Y.Z_rN` 標籤，取版本最新的一個。
 3. 如果這個標籤指向的 adb commit 已經發佈過（不管是哪個標籤名稱），就什麼都不做。
 4. 否則抓取該標籤的 AOSP 原始碼，編譯 arm64-v8a 版，另外用同一份原始碼編譯一個 x86_64 版。
-5. **模擬器測試**：開一個 Android 14 x86_64 模擬器，把 x86_64 版 adb 放進模擬器裡執行，
+5. **模擬器測試**：開一個 Android 14 x86_64 模擬器，把 adb 放進模擬器裡執行，
    讓它 `adb connect 127.0.0.1:5555` 連回模擬器自己，再跑 `adb shell`、`adb push`，等於在 CI 裡重現「手機自己調試自己」。
-   （GitHub 的機器跑不了 ARM 模擬器，所以用 x86_64 版代測；兩者是同一份原始碼和補丁。）
+   x86_64 版必須通過；arm64 版也會透過模擬器內建的 ARM 轉譯跑同一套測試（結果顯示在 Actions 執行頁面的 annotation）。
+   測試腳本是 [`scripts/smoke-test.sh`](scripts/smoke-test.sh)。
 6. 測試通過後，以 AOSP 標籤名稱（例如 `android-17.0.0_r1`）建立 Release，只發佈 arm64-v8a 版。
 
 為什麼追標籤而不是 `main`：Google 從 2025 年 3 月起不再公開更新 AOSP 的 `main` 分支，新程式碼只會隨版本標籤（例如 `android-17.0.0_r1`）一次釋出。
