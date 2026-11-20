@@ -87,7 +87,9 @@ if ! connect; then
 fi
 
 step "adb devices -l"
-dadb wait-for-device
+# On an emulator the server also finds the same adbd through its emulator
+# port scan (emulator-5554), so always name the target explicitly.
+dadb -s "$TARGET" wait-for-device
 dadb devices -l
 
 step "adb shell through the connection"
