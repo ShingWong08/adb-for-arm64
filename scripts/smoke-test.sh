@@ -55,7 +55,6 @@ adb shell "rm -rf $D && mkdir -p $D/.android $D/tmp"
 adb push "$BIN" "$D/adb" >/dev/null
 adb shell chmod 755 "$D/adb"
 adb push "$HOME/.android/adbkey" "$D/.android/adbkey" >/dev/null
-adb push "$HOME/.android/adbkey.pub" "$D/.android/adbkey.pub" >/dev/null
 
 step "adb version"
 dadb version
