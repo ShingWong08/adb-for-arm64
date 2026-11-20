@@ -139,7 +139,7 @@ jobs:
         run: bash scripts/build-adb.sh "$WORK" "$DIST"
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: adb-${{ matrix.abi }}
           path: dist/
@@ -153,12 +153,12 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v6
         with:
           name: adb-x86_64
           path: dist-x86_64
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v6
         with:
           name: adb-arm64-v8a
           path: dist-arm64-v8a
@@ -181,7 +181,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
             bash scripts/smoke-test.sh dist-x86_64/adb
-            bash scripts/smoke-test.sh dist-arm64-v8a/adb || echo "::notice::the x86_64 emulator could not run the arm64 binary; it was only tested as x86_64"
+            SMOKE_OPTIONAL=1 bash scripts/smoke-test.sh dist-arm64-v8a/adb || echo "::notice::the x86_64 emulator could not run the arm64 binary; it was only tested as x86_64"
 
   release:
     name: Publish release
@@ -191,7 +191,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v6
         with:
           name: adb-arm64-v8a
           path: dist

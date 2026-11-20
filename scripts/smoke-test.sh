@@ -20,6 +20,24 @@ D=/data/local/tmp/adb-smoke
 SERVER_PORT=5038 # adb server of the binary under test (the host's uses 5037)
 TARGET=127.0.0.1:5555
 
+# Keep a copy of the output; on failure in GitHub Actions, put its tail into
+# an annotation so it is readable without opening the job log.
+LOG=$(mktemp)
+exec > >(tee "$LOG") 2>&1
+report() {
+	local status=$?
+	if [ "$status" -ne 0 ] && [ -n "${GITHUB_ACTIONS:-}" ]; then
+		local tail_
+		tail_=$(tail -n 60 "$LOG" | tr -d '\r')
+		tail_=${tail_//%/%25}
+		local level=error
+		if [ -n "${SMOKE_OPTIONAL:-}" ]; then level=warning; fi
+		echo "::$level title=smoke test failed ($BIN)::${tail_//$'\n'/%0A}"
+	fi
+	rm -f "$LOG"
+}
+trap report EXIT
+
 step() { printf '\n==> %s\n' "$*"; }
 
 # Run the adb under test on the device.
